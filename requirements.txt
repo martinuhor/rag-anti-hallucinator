@@ -1,0 +1,27 @@
+# Core Agent & Graph Orchestration
+langgraph>=0.2.45
+langchain>=0.3.0
+langchain-core>=0.3.0
+
+# Multi-Model LLM Providers
+langchain-groq>=0.2.0
+langchain-google-genai>=2.0.0
+
+# Local Vector Store & Embeddings (100% Free, Local Inference)
+chromadb>=0.5.5
+langchain-chroma>=0.1.4
+langchain-huggingface>=0.1.0
+sentence-transformers>=3.0.0
+
+# Data Validation & Parsing
+pydantic>=2.7.0
+
+# API & Web UI Frameworks
+fastapi>=0.115.0
+uvicorn>=0.30.0
+streamlit>=1.38.0
+
+# Utilities & Developer Experience
+python-dotenv>=1.0.1
+requests>=2.32.0
+rich>=13.7.0
