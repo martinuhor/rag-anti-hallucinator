@@ -72,16 +72,24 @@ async def health_check() -> Dict[str, object]:
     except Exception:
         chroma_ready = False
 
+    # Operational as long as Google Gemini and ChromaDB are available
+    is_healthy = bool(google_ready and chroma_ready)
+    generator_info = (
+        f"Groq ({os.getenv('GROQ_MODEL', 'llama-3.3-70b-versatile')})"
+        if groq_ready
+        else f"Google Gemini ({os.getenv('GENERATOR_GEMINI_MODEL', 'gemini-1.5-flash')}) [Fallback]"
+    )
+
     return {
-        "status": "healthy" if (groq_ready and google_ready and chroma_ready) else "degraded",
+        "status": "healthy" if is_healthy else "degraded",
         "service": "Multi-Model RAG & Hallucination Auditor",
         "version": "1.0.0",
         "groq_configured": groq_ready,
         "google_configured": google_ready,
         "chroma_initialized": chroma_ready,
         "models": {
-            "generator": os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
-            "auditor": os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
+            "generator": generator_info,
+            "auditor": os.getenv("GEMINI_MODEL", "gemini-2.5-flash / gemini-1.5-flash"),
             "embeddings": "sentence-transformers/all-MiniLM-L6-v2 (Local CPU)",
         },
     }

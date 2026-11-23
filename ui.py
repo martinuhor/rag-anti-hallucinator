@@ -115,32 +115,35 @@ with st.sidebar:
         if has_groq:
             st.success("Groq: ✅")
         else:
-            st.error("Groq: ❌")
+            st.info("Groq: ⚪ (Gemini Fallback)")
     with col2:
         if has_google:
-            st.success("Gemini: ✅")
+            st.success("Gemini: ✅ (Required)")
         else:
-            st.error("Gemini: ❌")
+            st.error("Gemini: ❌ (Required)")
+
+    if not has_groq and has_google:
+        st.caption("ℹ️ **Single-Key Mode Active:** Google Gemini will power both the generator and critic automatically!")
 
     # Optional dynamic key overrides
     with st.expander("⚙️ Configure / Override Keys"):
-        user_groq = st.text_input(
-            "Groq API Key",
-            value=env_groq if has_groq else "",
-            type="password",
-            help="Free key from https://console.groq.com",
-        )
         user_google = st.text_input(
-            "Google Gemini Key",
+            "Google Gemini Key (Required)",
             value=env_google if has_google else "",
             type="password",
-            help="Free key from https://aistudio.google.com",
+            help="Free key from https://aistudio.google.com (works with any Google account)",
+        )
+        user_groq = st.text_input(
+            "Groq API Key (Optional)",
+            value=env_groq if has_groq else "",
+            type="password",
+            help="Optional free key from https://console.groq.com",
         )
         if st.button("Save Keys to Session"):
-            if user_groq:
-                os.environ["GROQ_API_KEY"] = user_groq
             if user_google:
                 os.environ["GOOGLE_API_KEY"] = user_google
+            if user_groq:
+                os.environ["GROQ_API_KEY"] = user_groq
             st.rerun()
 
     st.markdown("---")

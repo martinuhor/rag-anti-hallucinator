@@ -51,23 +51,54 @@ class AgentState(TypedDict):
 
 
 def _check_api_keys():
-    """Validates presence of required free-tier API keys."""
-    groq_key = os.getenv("GROQ_API_KEY", "").strip()
+    """Validates presence of required API keys.
+
+    Minimum requirement: GOOGLE_API_KEY (from https://aistudio.google.com).
+    Optional: GROQ_API_KEY (from https://console.groq.com).
+    If GROQ_API_KEY is not configured, the generator automatically falls back to Gemini.
+    """
     google_key = os.getenv("GOOGLE_API_KEY", "").strip()
 
-    missing = []
-    if not groq_key or groq_key.startswith("your_"):
-        missing.append("GROQ_API_KEY (Get free key at: https://console.groq.com)")
     if not google_key or google_key.startswith("your_"):
-        missing.append("GOOGLE_API_KEY (Get free key at: https://aistudio.google.com)")
-
-    if missing:
-        msg = (
-            "Missing required API credentials:\n"
-            + "\n".join(f"  - {m}" for m in missing)
-            + "\nPlease configure them in your .env file."
+        raise ValueError(
+            "Missing GOOGLE_API_KEY.\n"
+            "Please obtain a free API key at https://aistudio.google.com and set it in your .env file."
         )
-        raise ValueError(msg)
+
+
+def _get_generator_llm():
+    """Returns the generator LLM instance and its display descriptor.
+
+    Prefers Groq (Llama 3.3 70B). If GROQ_API_KEY is missing or blocked,
+    automatically falls back to Google Gemini (e.g. gemini-1.5-flash or gemini-2.0-flash).
+    """
+    groq_key = os.getenv("GROQ_API_KEY", "").strip()
+    if groq_key and not groq_key.startswith("your_"):
+        try:
+            from langchain_groq import ChatGroq
+            groq_model = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+            return ChatGroq(
+                model_name=groq_model,
+                temperature=0.2,
+                groq_api_key=groq_key,
+            ), f"Groq ({groq_model})"
+        except ImportError:
+            pass
+
+    # Seamless fallback: Google Gemini
+    google_key = os.getenv("GOOGLE_API_KEY", "").strip()
+    if google_key and not google_key.startswith("your_"):
+        from langchain_google_genai import ChatGoogleGenerativeAI
+        gemini_gen_model = os.getenv("GENERATOR_GEMINI_MODEL", "gemini-1.5-flash")
+        return ChatGoogleGenerativeAI(
+            model=gemini_gen_model,
+            temperature=0.3,
+            google_api_key=google_key,
+        ), f"Google Gemini ({gemini_gen_model}) [Groq Fallback]"
+
+    raise ValueError(
+        "No LLM generator key found. Please provide GOOGLE_API_KEY in your .env file."
+    )
 
 
 def retrieve_node(state: AgentState) -> Dict[str, Any]:
@@ -92,7 +123,7 @@ def retrieve_node(state: AgentState) -> Dict[str, Any]:
 
 
 def generate_node(state: AgentState) -> Dict[str, Any]:
-    """Node 2: Generates an answer using Groq (llama-3.3-70b-versatile).
+    """Node 2: Generates an answer using Groq Llama 3.3 70B (or Gemini fallback).
 
     - If simulate_hallucination is True and retries == 0: deliberately injects a subtle factual error.
     - If retries > 0: consumes Gemini Critic's correction instructions to self-correct.
@@ -100,17 +131,7 @@ def generate_node(state: AgentState) -> Dict[str, Any]:
     """
     _check_api_keys()
 
-    try:
-        from langchain_groq import ChatGroq
-    except ImportError as exc:
-        raise ImportError("langchain-groq is required. Run 'pip install langchain-groq'.") from exc
-
-    groq_model = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
-    llm = ChatGroq(
-        model_name=groq_model,
-        temperature=0.2,
-        groq_api_key=os.getenv("GROQ_API_KEY"),
-    )
+    llm, model_descriptor = _get_generator_llm()
 
     retries = state.get("retries", 0)
     simulate_hallucination = state.get("simulate_hallucination", False)
@@ -120,7 +141,7 @@ def generate_node(state: AgentState) -> Dict[str, Any]:
     if simulate_hallucination and retries == 0:
         log_step(
             "🤖 [Node: Generate]",
-            f"(Attempt {retries + 1}) [DEMO MODE: SIMULATING HALLUCINATION] Generating flawed answer via Groq ({groq_model})...",
+            f"(Attempt {retries + 1}) [DEMO MODE: SIMULATING HALLUCINATION] Generating flawed answer via {model_descriptor}...",
             "bold magenta",
         )
         system_prompt = (
@@ -133,7 +154,7 @@ def generate_node(state: AgentState) -> Dict[str, Any]:
         )
         log_entry = (
             f"🤖 [Generate Node - Attempt 1] Generated draft with intentional hallucination "
-            f"via Groq ({groq_model}) for demonstration."
+            f"via {model_descriptor} for demonstration."
         )
 
     elif retries > 0:
@@ -155,14 +176,14 @@ def generate_node(state: AgentState) -> Dict[str, Any]:
             "the provided ground-truth context. Eliminate every hallucination and ensure 100% factual fidelity."
         )
         log_entry = (
-            f"🔄 [Generate Node - Attempt {retries + 1}] Regenerated revised answer via Groq incorporating "
+            f"🔄 [Generate Node - Attempt {retries + 1}] Regenerated revised answer via {model_descriptor} incorporating "
             f"auditor critique."
         )
 
     else:
         log_step(
             "🤖 [Node: Generate]",
-            f"(Attempt {retries + 1}) Generating grounded answer via Groq ({groq_model})...",
+            f"(Attempt {retries + 1}) Generating grounded answer via {model_descriptor}...",
             "bold cyan",
         )
         system_prompt = (
@@ -173,7 +194,7 @@ def generate_node(state: AgentState) -> Dict[str, Any]:
         )
         log_entry = (
             f"🤖 [Generate Node - Attempt {retries + 1}] Generated context-grounded candidate answer "
-            f"via Groq ({groq_model})."
+            f"via {model_descriptor}."
         )
 
     user_prompt = f"POLICY CONTEXT:\n{context_str}\n\nQUESTION: {state['question']}"
@@ -225,29 +246,23 @@ def audit_node(state: AgentState) -> Dict[str, Any]:
         google_api_key=os.getenv("GOOGLE_API_KEY"),
     )
 
-    # Enforce Pydantic v2 structured output
-    auditor = llm.with_structured_output(AuditResult)
-
-    context_str = "\n\n---\n\n".join(state["retrieved_docs"])
-
-    audit_prompt = (
-        "You are an uncompromising Compliance and Fact-Checking Auditor (LLM-as-a-Judge) for ApexPay Global.\n"
-        "Your duty is to rigorously cross-examine the CANDIDATE ANSWER against the GROUND-TRUTH POLICY CONTEXT.\n\n"
-        "EVALUATION CRITERIA:\n"
-        "1. is_grounded: Set to True ONLY IF every single assertion, dollar amount, fee, timeline, percentage, "
-        "and error code in the CANDIDATE ANSWER is explicitly verified by the GROUND-TRUTH CONTEXT. "
-        "Set to False if ANY statement is fabricated, distorted, contradicted, or unsupported.\n"
-        "2. confidence_score: Assign a float between 0.0 and 1.0 representing your certainty of grounding.\n"
-        "3. hallucination_notes: If is_grounded is False, identify the exact ungrounded or fabricated claims. "
-        "If is_grounded is True, confirm all statements match ground truth.\n"
-        "4. correction_instructions: If is_grounded is False, provide exact instructions on what to fix, remove, "
-        "or replace using only verified facts from the context. If is_grounded is True, set to empty string ''.\n\n"
-        f"GROUND-TRUTH POLICY CONTEXT:\n{context_str}\n\n"
-        f"USER QUESTION:\n{state['question']}\n\n"
-        f"CANDIDATE ANSWER TO AUDIT:\n{state['candidate_answer']}"
-    )
-
-    audit_result: AuditResult = auditor.invoke(audit_prompt)
+    # Enforce Pydantic v2 structured output with model fallback
+    try:
+        auditor = llm.with_structured_output(AuditResult)
+        audit_result: AuditResult = auditor.invoke(audit_prompt)
+    except Exception as exc:
+        # Fallback to gemini-1.5-flash if 2.5-flash is not available on user's tier
+        if "not found" in str(exc).lower() or "404" in str(exc) or "gemini-2.5" in gemini_model:
+            log_step("⚠️  [Audit Fallback]", "Retrying audit with 'gemini-1.5-flash'...", "yellow")
+            fallback_llm = ChatGoogleGenerativeAI(
+                model="gemini-1.5-flash",
+                temperature=0.0,
+                google_api_key=os.getenv("GOOGLE_API_KEY"),
+            )
+            auditor = fallback_llm.with_structured_output(AuditResult)
+            audit_result: AuditResult = auditor.invoke(audit_prompt)
+        else:
+            raise exc
 
     current_log = list(state.get("audit_log", []))
 
