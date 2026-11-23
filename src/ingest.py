@@ -10,6 +10,11 @@ import sys
 from pathlib import Path
 from typing import List, Optional
 
+from dotenv import load_dotenv
+
+# Load environment configuration (.env)
+load_dotenv()
+
 # Resolve paths relative to project root
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DATA_PATH = PROJECT_ROOT / "data" / "sample_policy.md"
@@ -21,31 +26,59 @@ _CACHED_EMBEDDINGS = None
 
 
 def get_embedding_function():
-    """Initializes and caches the local HuggingFace embedding model.
+    """Initializes and caches the embedding model.
 
-    Runs 100% locally on CPU without requiring external API keys.
+    Priority:
+    1. Local HuggingFace sentence-transformers (all-MiniLM-L6-v2) if torch is available.
+    2. Google Gemini Embeddings (gemini-embedding-001) using GOOGLE_API_KEY (fast, works on Python 3.13).
+    3. Chroma's ONNX default embedding function (all-MiniLM-L6-v2 via onnxruntime).
     """
     global _CACHED_EMBEDDINGS
     if _CACHED_EMBEDDINGS is not None:
         return _CACHED_EMBEDDINGS
 
+    # 1. Try HuggingFace embeddings
     try:
         from langchain_huggingface import HuggingFaceEmbeddings
-    except ImportError:
-        try:
-            from langchain_community.embeddings import HuggingFaceEmbeddings
-        except ImportError as exc:
-            raise ImportError(
-                "Could not import HuggingFaceEmbeddings. Please ensure 'langchain-huggingface' "
-                "or 'langchain-community' and 'sentence-transformers' are installed."
-            ) from exc
+        print(f"📦 [Embeddings] Loading local model: {EMBEDDING_MODEL_NAME}...")
+        _CACHED_EMBEDDINGS = HuggingFaceEmbeddings(
+            model_name=EMBEDDING_MODEL_NAME,
+            model_kwargs={"device": "cpu"},
+            encode_kwargs={"normalize_embeddings": True},
+        )
+        return _CACHED_EMBEDDINGS
+    except Exception:
+        pass
 
-    print(f"📦 [Embeddings] Loading local model: {EMBEDDING_MODEL_NAME}...")
-    _CACHED_EMBEDDINGS = HuggingFaceEmbeddings(
-        model_name=EMBEDDING_MODEL_NAME,
-        model_kwargs={"device": "cpu"},
-        encode_kwargs={"normalize_embeddings": True},
-    )
+    # 2. Try Google Gemini Embeddings (native free tier)
+    google_key = os.getenv("GOOGLE_API_KEY", "").strip()
+    if google_key and not google_key.startswith("your_"):
+        try:
+            from langchain_google_genai import GoogleGenerativeAIEmbeddings
+            print("📦 [Embeddings] Initializing Google Gemini Embeddings (gemini-embedding-001)...")
+            _CACHED_EMBEDDINGS = GoogleGenerativeAIEmbeddings(
+                model="models/gemini-embedding-001",
+                google_api_key=google_key,
+            )
+            return _CACHED_EMBEDDINGS
+        except Exception as exc:
+            print(f"⚠️  [Embeddings] Notice initializing Google Gemini embeddings: {exc}")
+
+    # 3. Fallback to Chroma ONNX default embedding function
+    print("📦 [Embeddings] Falling back to Chroma ONNX DefaultEmbeddingFunction...")
+    import chromadb.utils.embedding_functions as ef
+
+    class ChromaONNXEmbeddings:
+        def __init__(self):
+            self.fn = ef.DefaultEmbeddingFunction()
+
+        def embed_documents(self, texts: List[str]) -> List[List[float]]:
+            return self.fn(texts)
+
+        def embed_query(self, text: str) -> List[float]:
+            return self.fn([text])[0]
+
+    _CACHED_EMBEDDINGS = ChromaONNXEmbeddings()
     return _CACHED_EMBEDDINGS
 
 

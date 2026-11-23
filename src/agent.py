@@ -12,6 +12,11 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, TypedDict
 
+# Ensure project root is in sys.path
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 from dotenv import load_dotenv
 from pydantic import ValidationError
 
@@ -89,12 +94,12 @@ def _get_generator_llm():
     google_key = os.getenv("GOOGLE_API_KEY", "").strip()
     if google_key and not google_key.startswith("your_"):
         from langchain_google_genai import ChatGoogleGenerativeAI
-        gemini_gen_model = os.getenv("GENERATOR_GEMINI_MODEL", "gemini-1.5-flash")
+        gemini_gen_model = os.getenv("GENERATOR_GEMINI_MODEL", "gemini-3.5-flash-lite")
         return ChatGoogleGenerativeAI(
             model=gemini_gen_model,
             temperature=0.3,
             google_api_key=google_key,
-        ), f"Google Gemini ({gemini_gen_model}) [Groq Fallback]"
+        ), f"Google Gemini ({gemini_gen_model}) [Groq Alternative]"
 
     raise ValueError(
         "No LLM generator key found. Please provide GOOGLE_API_KEY in your .env file."
@@ -206,7 +211,13 @@ def generate_node(state: AgentState) -> Dict[str, Any]:
     ]
 
     response = llm.invoke(messages)
-    candidate_answer = str(response.content).strip()
+    if isinstance(response.content, list):
+        candidate_answer = "".join(
+            part.get("text", "") if isinstance(part, dict) else str(part)
+            for part in response.content
+        ).strip()
+    else:
+        candidate_answer = str(response.content).strip()
 
     log_step("   ↳ Draft Output:", f"'{candidate_answer[:120]}...'", "dim")
     current_log.append(log_entry)
@@ -218,7 +229,7 @@ def generate_node(state: AgentState) -> Dict[str, Any]:
 
 
 def audit_node(state: AgentState) -> Dict[str, Any]:
-    """Node 3: Audits the candidate answer using Gemini 2.5 Flash + Pydantic Structured Output.
+    """Node 3: Audits the candidate answer using Gemini + Pydantic Structured Output.
 
     Acts as an adversarial 'LLM-as-a-Judge', inspecting every assertion against ground truth.
     """
@@ -231,13 +242,32 @@ def audit_node(state: AgentState) -> Dict[str, Any]:
             "langchain-google-genai is required. Run 'pip install langchain-google-genai'."
         ) from exc
 
-    gemini_model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+    gemini_model = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
     retries = state.get("retries", 0)
 
     log_step(
         "⚖️  [Node: Audit]",
         f"(Attempt {retries + 1}) Critic reviewing candidate answer via Google Gemini ({gemini_model})...",
         "bold yellow",
+    )
+
+    context_str = "\n\n---\n\n".join(state["retrieved_docs"])
+
+    audit_prompt = (
+        "You are an uncompromising Compliance and Fact-Checking Auditor (LLM-as-a-Judge) for ApexPay Global.\n"
+        "Your duty is to rigorously cross-examine the CANDIDATE ANSWER against the GROUND-TRUTH POLICY CONTEXT.\n\n"
+        "EVALUATION CRITERIA:\n"
+        "1. is_grounded: Set to True ONLY IF every single assertion, dollar amount, fee, timeline, percentage, "
+        "and error code in the CANDIDATE ANSWER is explicitly verified by the GROUND-TRUTH CONTEXT. "
+        "Set to False if ANY statement is fabricated, distorted, contradicted, or unsupported.\n"
+        "2. confidence_score: Assign a float between 0.0 and 1.0 representing your certainty of grounding.\n"
+        "3. hallucination_notes: If is_grounded is False, identify the exact ungrounded or fabricated claims. "
+        "If is_grounded is True, confirm all statements match ground truth.\n"
+        "4. correction_instructions: If is_grounded is False, provide exact instructions on what to fix, remove, "
+        "or replace using only verified facts from the context. If is_grounded is True, set to empty string ''.\n\n"
+        f"GROUND-TRUTH POLICY CONTEXT:\n{context_str}\n\n"
+        f"USER QUESTION:\n{state['question']}\n\n"
+        f"CANDIDATE ANSWER TO AUDIT:\n{state['candidate_answer']}"
     )
 
     llm = ChatGoogleGenerativeAI(
@@ -251,18 +281,15 @@ def audit_node(state: AgentState) -> Dict[str, Any]:
         auditor = llm.with_structured_output(AuditResult)
         audit_result: AuditResult = auditor.invoke(audit_prompt)
     except Exception as exc:
-        # Fallback to gemini-1.5-flash if 2.5-flash is not available on user's tier
-        if "not found" in str(exc).lower() or "404" in str(exc) or "gemini-2.5" in gemini_model:
-            log_step("⚠️  [Audit Fallback]", "Retrying audit with 'gemini-1.5-flash'...", "yellow")
-            fallback_llm = ChatGoogleGenerativeAI(
-                model="gemini-1.5-flash",
-                temperature=0.0,
-                google_api_key=os.getenv("GOOGLE_API_KEY"),
-            )
-            auditor = fallback_llm.with_structured_output(AuditResult)
-            audit_result: AuditResult = auditor.invoke(audit_prompt)
-        else:
-            raise exc
+        log_step("⚠️  [Audit Fallback]", f"Retrying audit with fallback model due to: {exc}", "yellow")
+        fallback_model = "gemini-3.8-flash" if gemini_model == "gemini-3.5-flash-lite" else "gemini-3.5-flash-lite"
+        fallback_llm = ChatGoogleGenerativeAI(
+            model=fallback_model,
+            temperature=0.0,
+            google_api_key=os.getenv("GOOGLE_API_KEY"),
+        )
+        auditor = fallback_llm.with_structured_output(AuditResult)
+        audit_result: AuditResult = auditor.invoke(audit_prompt)
 
     current_log = list(state.get("audit_log", []))
 
